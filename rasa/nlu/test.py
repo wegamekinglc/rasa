@@ -19,7 +19,7 @@ from typing import (
 
 from rasa.constants import TEST_DATA_FILE, TRAIN_DATA_FILE
 from rasa import model
-from rasa import train
+from rasa import train as rasa_train
 from rasa.utils.io import create_path
 from rasa.nlu import config, training_data, utils
 from rasa.nlu.utils import write_to_file
@@ -975,7 +975,7 @@ def compare_nlu(
                 )
 
                 try:
-                    model_path = train.train_nlu(
+                    model_path = rasa_train.train_nlu(
                         nlu_config,
                         train_split_path,
                         model_output_path,
