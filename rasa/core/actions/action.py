@@ -13,7 +13,15 @@ from rasa.core.constants import (
     DEFAULT_REQUEST_TIMEOUT,
     REQUESTED_SLOT,
     USER_INTENT_OUT_OF_SCOPE,
+    UTTER_PREFIX,
+    RESPOND_PREFIX,
 )
+from rasa.nlu.constants import (
+    DEFAULT_OPEN_UTTERANCE_TYPE,
+    OPEN_UTTERANCE_PREDICTION_KEY,
+    MESSAGE_SELECTOR_PROPERTY_NAME,
+)
+
 from rasa.core.events import (
     UserUtteranceReverted,
     UserUttered,
@@ -46,8 +54,6 @@ ACTION_DEFAULT_ASK_AFFIRMATION_NAME = "action_default_ask_affirmation"
 ACTION_DEFAULT_ASK_REPHRASE_NAME = "action_default_ask_rephrase"
 
 ACTION_BACK_NAME = "action_back"
-
-UTTER_PREFIX = "utter_"
 
 
 def default_actions() -> List["Action"]:
@@ -92,6 +98,8 @@ def action_from_name(
         return defaults[name]
     elif name.startswith(UTTER_PREFIX):
         return ActionUtterTemplate(name)
+    elif name.startswith(RESPOND_PREFIX):
+        return ActionRetrieveResponse(name)
     else:
         return RemoteAction(name, action_endpoint)
 
@@ -166,6 +174,56 @@ class Action(object):
 
     def __str__(self) -> Text:
         return "Action('{}')".format(self.name())
+
+
+class ActionRetrieveResponse(Action):
+    """An action which queries the Response Selector for the appropriate response."""
+
+    def __init__(self, name: Text, silent_fail: Optional[bool] = False):
+        self.action_name = name
+        self.silent_fail = silent_fail
+
+    def intent_name_from_action(self):
+        return self.action_name.split(RESPOND_PREFIX)[1]
+
+    async def run(
+        self,
+        output_channel: "OutputChannel",
+        nlg: "NaturalLanguageGenerator",
+        tracker: "DialogueStateTracker",
+        domain: "Domain",
+    ):
+        """Query the appropriate response and create a bot utterance with that."""
+
+        response_selector_properties = tracker.latest_message.parse_data[
+            MESSAGE_SELECTOR_PROPERTY_NAME
+        ]
+
+        if self.intent_name_from_action() in response_selector_properties:
+            query_key = self.intent_name_from_action()
+        elif DEFAULT_OPEN_UTTERANCE_TYPE in response_selector_properties:
+            query_key = DEFAULT_OPEN_UTTERANCE_TYPE
+        else:
+            if not self.silent_fail:
+                logger.error(
+                    "Couldn't create message for response action '{}'."
+                    "".format(self.action_name)
+                )
+            return []
+
+        logger.debug("Picking response from selector of type {}".format(query_key))
+        message = {
+            "text": response_selector_properties[query_key][
+                OPEN_UTTERANCE_PREDICTION_KEY
+            ]["name"]
+        }
+        return [create_bot_utterance(message)]
+
+    def name(self) -> Text:
+        return self.action_name
+
+    def __str__(self) -> Text:
+        return "ActionRetrieveResponse('{}')".format(self.name())
 
 
 class ActionUtterTemplate(Action):
@@ -380,14 +438,16 @@ class RemoteAction(Action):
         json_body = self._action_call_format(tracker, domain)
 
         if not self.action_endpoint:
-            raise Exception(
-                "The model predicted the custom action '{}' "
+            logger.error(
+                "The model predicted the custom action '{}', "
                 "but you didn't configure an endpoint to "
                 "run this custom action. Please take a look at "
-                "the docs and set an endpoint configuration. "
+                "the docs and set an endpoint configuration via the "
+                "--endpoints flag. "
                 "{}/core/actions"
                 "".format(self.name(), DOCS_BASE_URL)
             )
+            raise Exception("Failed to execute custom action.")
 
         try:
             logger.debug(
@@ -413,7 +473,7 @@ class RemoteAction(Action):
                 exception = ActionExecutionRejection(
                     response_data["action_name"], response_data.get("error")
                 )
-                logger.debug(exception.message)
+                logger.error(exception.message)
                 raise exception
             else:
                 raise Exception("Failed to execute custom action.") from e

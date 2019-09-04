@@ -1,10 +1,12 @@
-:desc: Find out how to use the HTTP API of Rasa to integrate
+:desc: Find out how to use Rasa's HTTP API to integrate Rasa
        with your backend components.
 
 .. _running-the-server:
 
 Running the Server
 ==================
+
+.. edit-link::
 
 .. contents::
    :local:
@@ -29,12 +31,12 @@ The different parameters are:
 
 Rasa can load your model in three different ways:
 
-1. Load the model specified via ``-m`` from your local storage system,
-2. Fetch the model from a server (see :ref:`server_fetch_from_server`), or
-3. Fetch the model from a remote storage (see :ref:`cloud-storage`).
+1. Fetch the model from a server (see :ref:`server_fetch_from_server`), or
+2. Fetch the model from a remote storage (see :ref:`cloud-storage`).
+3. Load the model specified via ``-m`` from your local storage system,
 
-Rasa tries to load a model in the above mentioned order, i.e. it only tries to load your model from a server
-if it could not find the model on your local storage system.
+Rasa tries to load a model in the above mentioned order, i.e. it only tries to load your model from your local
+storage system if no model server and no remote storage were configured.
 
 .. warning::
 
@@ -66,7 +68,7 @@ You can configure the HTTP server to fetch models from another URL:
 
 .. code-block:: bash
 
-    rasa run -m models --enable-api --log-file out.log --endpoints my_endpoints.yml
+    rasa run --enable-api --log-file out.log --endpoints my_endpoints.yml
 
 The model server is specified in the endpoint configuration
 (``my_endpoints.yml``), where you specify the server URL Rasa
@@ -115,6 +117,28 @@ You can also configure the Rasa server to fetch your model from a remote storage
 
 The model will be downloaded and stored in a temporary directory on your local storage system.
 For more information see :ref:`cloud-storage`.
+
+.. _server_ssl:
+
+Configuring SSL / HTTPS
+-----------------------
+
+By default the Rasa server is using HTTP for its communication. To secure the
+communication with SSL, you need to provide a valid certificate and the corresponding
+private key file.
+
+You can specify these files as part of the ``rasa run`` command:
+
+.. code-block:: bash
+
+    rasa run --ssl-certificate myssl.crt --ssl-keyfile myssl.key
+
+If you encrypted your keyfile with a password during creation, you need to add
+this password to the command:
+
+.. code-block:: bash
+
+    rasa run --ssl-certificate myssl.crt --ssl-keyfile myssl.key --ssl-password mypassword
 
 
 .. _server_security:

@@ -92,6 +92,13 @@ class Checkpoint(object):
 
 
 class StoryStep(object):
+    """A StoryStep is a section of a story block between two checkpoints.
+
+    NOTE: Checkpoints are not only limited to those manually written
+    in the story file, but are also implicitly created at points where
+    multiple intents are separated in one line by chaining them with "OR"s.
+    """
+
     def __init__(
         self,
         block_name: Optional[Text] = None,
@@ -218,14 +225,20 @@ class StoryStep(object):
                     # form is active
                     if self.story_string_helper.form_rejected:
                         if (
-                            self.story_string_helper.form_validation
+                            self.story_string_helper.form_prefix_string
+                            and self.story_string_helper.form_validation
                             and s.action_name == self.story_string_helper.active_form
                         ):
+                            # if there is something in `form_prefix_string`,
+                            # add action_listen before it,
+                            # because this form user input will be ignored by core
+                            # and therefore action_listen will not be automatically
+                            # added during reading the stories
                             result += self._bot_string(
                                 ActionExecuted(ACTION_LISTEN_NAME)
                             )
                             result += self.story_string_helper.form_prefix_string
-                        else:
+                        elif self.story_string_helper.no_form_prefix_string:
                             result += self.story_string_helper.no_form_prefix_string
                         # form rejected, add story string without form prefix
                         result += self._bot_string(s)
@@ -392,6 +405,8 @@ class Story(object):
 
 
 class StoryGraph(object):
+    """Graph of the story-steps pooled from all stories in the training data."""
+
     def __init__(
         self,
         story_steps: List[StoryStep],
@@ -407,6 +422,12 @@ class StoryGraph(object):
         else:
             self.story_end_checkpoints = {}
 
+    def __hash__(self) -> int:
+        self_as_string = self.as_story_string()
+        text_hash = utils.get_text_hash(self_as_string)
+
+        return int(text_hash, 16)
+
     def ordered_steps(self) -> List[StoryStep]:
         """Returns the story steps ordered by topological order of the DAG."""
 
@@ -419,6 +440,16 @@ class StoryGraph(object):
             (self.get(source), self.get(target))
             for source, target in self.cyclic_edge_ids
         ]
+
+    def merge(self, other: Optional["StoryGraph"]) -> "StoryGraph":
+        if not other:
+            return self
+
+        steps = self.story_steps.copy() + other.story_steps
+        story_end_checkpoints = self.story_end_checkpoints.copy().update(
+            other.story_end_checkpoints
+        )
+        return StoryGraph(steps, story_end_checkpoints)
 
     @staticmethod
     def overlapping_checkpoint_names(
@@ -758,3 +789,8 @@ class StoryGraph(object):
             visualization.persist_graph(graph, output_file)
 
         return graph
+
+    def is_empty(self) -> bool:
+        """Checks if `StoryGraph` is empty."""
+
+        return not self.story_steps

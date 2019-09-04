@@ -1,6 +1,5 @@
 import argparse
 import os
-import shutil
 from typing import List, Text
 
 import rasa.cli.train as train
@@ -10,7 +9,11 @@ from rasa import data, model
 
 # noinspection PyProtectedMember
 from rasa.cli.utils import get_validated_path, print_error
-from rasa.constants import DEFAULT_DATA_PATH, DEFAULT_MODELS_PATH
+from rasa.constants import (
+    DEFAULT_DATA_PATH,
+    DEFAULT_MODELS_PATH,
+    DEFAULT_ENDPOINTS_PATH,
+)
 from rasa.model import get_latest_model
 
 
@@ -78,6 +81,10 @@ def perform_interactive_learning(args, zipped_model):
             args.core, args.nlu = model.get_model_subdirectories(model_path)
             stories_directory = data.get_core_directory(args.data)
 
+            args.endpoints = get_validated_path(
+                args.endpoints, "endpoints", DEFAULT_ENDPOINTS_PATH, True
+            )
+
             do_interactive_learning(args, stories_directory)
     else:
         print_error(
@@ -100,8 +107,8 @@ def check_training_data(args):
         get_validated_path(f, "data", DEFAULT_DATA_PATH, none_is_valid=True)
         for f in args.data
     ]
-    story_directory, nlu_data_directory = data.get_core_nlu_directories(training_files)
-    if not os.listdir(story_directory) or not os.listdir(nlu_data_directory):
+    story_files, nlu_files = data.get_core_nlu_files(training_files)
+    if not story_files or not nlu_files:
         print_error(
             "Cannot train initial Rasa model. Please provide NLU and Core data "
             "using the '--data' argument."

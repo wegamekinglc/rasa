@@ -21,18 +21,14 @@ from questionary import Choice, Form, Question
 
 from rasa.cli import utils as cliutils
 from rasa.core import constants, run, train, utils
-from rasa.core.actions.action import (
-    ACTION_LISTEN_NAME,
-    default_action_names,
-    UTTER_PREFIX,
-)
+from rasa.core.actions.action import ACTION_LISTEN_NAME, default_action_names
 from rasa.core.channels.channel import UserMessage
-from rasa.core.channels.channel import button_to_string, element_to_string
 from rasa.core.constants import (
     DEFAULT_SERVER_FORMAT,
     DEFAULT_SERVER_PORT,
     DEFAULT_SERVER_URL,
     REQUESTED_SLOT,
+    UTTER_PREFIX,
 )
 from rasa.core.domain import Domain
 import rasa.core.events
@@ -58,7 +54,7 @@ from rasa.utils.common import update_sanic_log_level
 from rasa.utils.endpoints import EndpointConfig
 
 # noinspection PyProtectedMember
-from rasa.nlu.training_data.loading import _guess_format, load_data
+from rasa.nlu.training_data import loading
 from rasa.nlu.training_data.message import Message
 
 # WARNING: This command line UI is using an external library
@@ -66,7 +62,7 @@ from rasa.nlu.training_data.message import Message
 # automatically. If you change anything in here, please make sure to
 # run the interactive learning and check if your part of the "ui"
 # still works.
-from rasa.utils.io import create_path
+import rasa.utils.io as io_utils
 
 logger = logging.getLogger(__name__)
 
@@ -257,20 +253,22 @@ def format_bot_output(message: BotUttered) -> Text:
 
     if data.get("buttons"):
         output += "\nButtons:"
-        for idx, button in enumerate(data.get("buttons")):
-            button_str = button_to_string(button, idx)
-            output += "\n" + button_str
+        choices = cliutils.button_choices_from_message_data(
+            data, allow_free_text_input=True
+        )
+        for choice in choices:
+            output += "\n" + choice
 
     if data.get("elements"):
         output += "\nElements:"
         for idx, element in enumerate(data.get("elements")):
-            element_str = element_to_string(element, idx)
+            element_str = cliutils.element_to_string(element, idx)
             output += "\n" + element_str
 
     if data.get("quick_replies"):
         output += "\nQuick replies:"
         for idx, element in enumerate(data.get("quick_replies")):
-            element_str = element_to_string(element, idx)
+            element_str = cliutils.element_to_string(element, idx)
             output += "\n" + element_str
     return output
 
@@ -334,20 +332,31 @@ def _selection_choices_from_intent_prediction(
 
 
 async def _request_free_text_intent(sender_id: Text, endpoint: EndpointConfig) -> Text:
-    question = questionary.text("Please type the intent name:")
+    question = questionary.text(
+        message="Please type the intent name:",
+        validate=io_utils.not_empty_validator("Please enter an intent name"),
+    )
     return await _ask_questions(question, sender_id, endpoint)
 
 
 async def _request_free_text_action(sender_id: Text, endpoint: EndpointConfig) -> Text:
-    question = questionary.text("Please type the action name:")
+    question = questionary.text(
+        message="Please type the action name:",
+        validate=io_utils.not_empty_validator("Please enter an action name"),
+    )
     return await _ask_questions(question, sender_id, endpoint)
 
 
 async def _request_free_text_utterance(
     sender_id: Text, endpoint: EndpointConfig, action: Text
 ) -> Text:
+
     question = questionary.text(
-        "Please type the message for your new utter_template '{}':".format(action)
+        message=(
+            "Please type the message for your new utterance "
+            "template '{}':".format(action)
+        ),
+        validate=io_utils.not_empty_validator("Please enter a template message"),
     )
     return await _ask_questions(question, sender_id, endpoint)
 
@@ -561,9 +570,12 @@ async def _write_data_to_file(sender_id: Text, endpoint: EndpointConfig):
     tracker = await retrieve_tracker(endpoint, sender_id)
     events = tracker.get("events", [])
 
-    await _write_stories_to_file(story_path, events)
+    serialised_domain = await retrieve_domain(endpoint)
+    domain = Domain.from_dict(serialised_domain)
+
+    await _write_stories_to_file(story_path, events, domain)
     await _write_nlu_to_file(nlu_path, events)
-    await _write_domain_to_file(domain_path, events, endpoint)
+    await _write_domain_to_file(domain_path, events, domain)
 
     logger.info("Successfully wrote stories and NLU data")
 
@@ -661,16 +673,28 @@ def _request_export_info() -> Tuple[Text, Text, Text]:
             message="Export stories to (if file exists, this "
             "will append the stories)",
             default=PATHS["stories"],
+            validate=io_utils.file_type_validator(
+                [".md"],
+                "Please provide a valid export path for the stories, e.g. 'stories.md'.",
+            ),
         ),
         export_nlu=questionary.text(
             message="Export NLU data to (if file exists, this will "
             "merge learned data with previous training examples)",
             default=PATHS["nlu"],
+            validate=io_utils.file_type_validator(
+                [".md"],
+                "Please provide a valid export path for the NLU data, e.g. 'nlu.md'.",
+            ),
         ),
         export_domain=questionary.text(
             message="Export domain file to (if file exists, this "
             "will be overwritten)",
             default=PATHS["domain"],
+            validate=io_utils.file_type_validator(
+                [".yml", ".yaml"],
+                "Please provide a valid export path for the domain file, e.g. 'domain.yml'.",
+            ),
         ),
     )
 
@@ -736,6 +760,9 @@ def _collect_messages(events: List[Dict[Text, Any]]) -> List[Message]:
             msg = Message.build(data["text"], data["intent"]["name"], data["entities"])
             msgs.append(msg)
 
+        elif event.get("event") == UserUtteranceReverted.type_name and msgs:
+            msgs.pop()  # user corrected the nlu, remove incorrect example
+
     return msgs
 
 
@@ -746,13 +773,13 @@ def _collect_actions(events: List[Dict[Text, Any]]) -> List[Dict[Text, Any]]:
 
 
 async def _write_stories_to_file(
-    export_story_path: Text, events: List[Dict[Text, Any]]
+    export_story_path: Text, events: List[Dict[Text, Any]], domain: Domain
 ) -> None:
     """Write the conversation of the sender_id to the file paths."""
 
     sub_conversations = _split_conversation_at_restarts(events)
 
-    create_path(export_story_path)
+    io_utils.create_path(export_story_path)
 
     if os.path.exists(export_story_path):
         append_write = "a"  # append if already exists
@@ -760,10 +787,18 @@ async def _write_stories_to_file(
         append_write = "w"  # make a new file if not
 
     with open(export_story_path, append_write, encoding="utf-8") as f:
+        i = 1
         for conversation in sub_conversations:
             parsed_events = rasa.core.events.deserialise_events(conversation)
-            s = Story.from_events(parsed_events)
-            f.write("\n" + s.as_story_string(flat=True))
+            tracker = DialogueStateTracker.from_events(
+                "interactive_story_{}".format(i), evts=parsed_events, slots=domain.slots
+            )
+
+            if any(
+                isinstance(event, UserUttered) for event in tracker.applied_events()
+            ):
+                i += 1
+                f.write("\n" + tracker.export_stories())
 
 
 async def _write_nlu_to_file(
@@ -776,37 +811,28 @@ async def _write_nlu_to_file(
 
     # noinspection PyBroadException
     try:
-        previous_examples = load_data(export_nlu_path)
+        previous_examples = loading.load_data(export_nlu_path)
     except Exception as e:
-        logger.exception("An exception occurred while trying to load the NLU data.")
-
-        export_nlu_path = questionary.text(
-            message="Could not load existing NLU data, please "
-            "specify where to store NLU data learned in "
-            "this session (this will overwrite any "
-            "existing file). {}".format(str(e)),
-            default=PATHS["backup"],
-        ).ask()
-
-        if export_nlu_path is None:
-            return
-
+        logger.debug(
+            "An exception occurred while trying to load the NLU data. {}".format(str(e))
+        )
+        # No previous file exists, use empty training data as replacement.
         previous_examples = TrainingData()
 
     nlu_data = previous_examples.merge(TrainingData(msgs))
 
     # need to guess the format of the file before opening it to avoid a read
     # in a write
-    if _guess_format(export_nlu_path) in {"md", "unk"}:
+    if loading.guess_format(export_nlu_path) in {"md", "unk"}:
         fformat = "md"
     else:
         fformat = "json"
 
     with open(export_nlu_path, "w", encoding="utf-8") as f:
         if fformat == "md":
-            f.write(nlu_data.as_markdown())
+            f.write(nlu_data.nlu_as_markdown())
         else:
-            f.write(nlu_data.as_json())
+            f.write(nlu_data.nlu_as_json())
 
 
 def _entities_from_messages(messages):
@@ -824,14 +850,11 @@ def _intents_from_messages(messages):
 
 
 async def _write_domain_to_file(
-    domain_path: Text, events: List[Dict[Text, Any]], endpoint: EndpointConfig
+    domain_path: Text, events: List[Dict[Text, Any]], old_domain: Domain
 ) -> None:
     """Write an updated domain file to the file path."""
 
-    create_path(domain_path)
-
-    domain = await retrieve_domain(endpoint)
-    old_domain = Domain.from_dict(domain)
+    io_utils.create_path(domain_path)
 
     messages = _collect_messages(events)
     actions = _collect_actions(events)
@@ -860,7 +883,7 @@ async def _predict_till_next_listen(
     sender_ids: List[Text],
     plot_file: Optional[Text],
 ) -> None:
-    """Predict and validate actions until we need to wait for a user msg."""
+    """Predict and validate actions until we need to wait for a user message."""
 
     listen = False
     while not listen:
@@ -896,16 +919,21 @@ async def _predict_till_next_listen(
         if last_event.get("event") == BotUttered.type_name and last_event["data"].get(
             "buttons", None
         ):
-            data = last_event["data"]
-            message = last_event.get("text", "")
-            choices = [
-                button_to_string(button, idx)
-                for idx, button in enumerate(data.get("buttons"))
-            ]
+            response = _get_button_choice(last_event)
+            if response != cliutils.FREE_TEXT_INPUT_PROMPT:
+                await send_message(endpoint, sender_id, response)
 
-            question = questionary.select(message, choices)
-            button_payload = cliutils.payload_from_button_question(question)
-            await send_message(endpoint, sender_id, button_payload)
+
+def _get_button_choice(last_event: Dict[Text, Any]) -> Text:
+    data = last_event["data"]
+    message = last_event.get("text", "")
+
+    choices = cliutils.button_choices_from_message_data(
+        data, allow_free_text_input=True
+    )
+    question = questionary.select(message, choices)
+    response = cliutils.payload_from_button_question(question)
+    return response
 
 
 async def _correct_wrong_nlu(
@@ -1298,7 +1326,9 @@ def _print_help(skip_visualization: bool) -> None:
     """Print some initial help message for the user."""
 
     if not skip_visualization:
-        visualization_url = DEFAULT_SERVER_FORMAT.format(DEFAULT_SERVER_PORT + 1)
+        visualization_url = DEFAULT_SERVER_FORMAT.format(
+            "http", DEFAULT_SERVER_PORT + 1
+        )
         visualization_help = "Visualisation at {}/visualization.html.".format(
             visualization_url
         )
@@ -1359,6 +1389,7 @@ async def record_messages(
                 if await is_listening_for_message(sender_id, endpoint):
                     await _enter_user_message(sender_id, endpoint)
                     await _validate_nlu(intents, endpoint, sender_id)
+
                 await _predict_till_next_listen(
                     endpoint, sender_id, sender_ids, plot_file
                 )

@@ -1,13 +1,15 @@
 :desc: Handle Rasa models on premise or in your private cloud for
-       gdpr compliant intent recognition and entity extraction.
+       GDPR-compliant intent recognition and entity extraction.
 
 .. _cloud-storage:
 
 Cloud Storage
 =============
 
-Rasa supports using `S3 <https://aws.amazon.com/s3/>`_ and
-`GCS <https://cloud.google.com/storage/>`_ to save your models.
+.. edit-link::
+
+Rasa supports using `S3 <https://aws.amazon.com/s3/>`_ ,
+`GCS <https://cloud.google.com/storage/>`_ and `Azure Storage <https://azure.microsoft.com/services/storage/>` to save your models.
 
 * Amazon S3 Storage
     S3 is supported using the ``boto3`` module which you can
